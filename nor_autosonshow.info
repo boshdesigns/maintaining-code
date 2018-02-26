@@ -1,0 +1,4 @@
+name = NOR AutosOnShow Integration
+description = Adding AutosOnShow to the Used Vehicles Page
+package = spidersnet
+core = 7.x

@@ -1,0 +1,185 @@
+<?php
+// CREATE A CUSTOM WEBSITE SETTINGS PANEL TO ADD CLIENTID AND SECRET
+function nor_autosonshow_menu() {
+  $items['admin/fmg_autosite_helper/autosonshow-settings'] = array(
+    'title' => 'AutosOnShow Settings',
+    'description' => 'Define AutosOnShow Settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('nor_autosonshow_admin_form'),
+    'access arguments' => array('user_is_logged_in'),
+    'file' => 'nor_autosonshow.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => 49,
+  );
+  return $items;
+}
+
+// Create a class for the AutosOnShow API Call
+class AOSAPI {
+    public $curlHeaders;
+    public $responseCode;
+    public $accessToken;
+    private $_accessTokenUrl = "https://api.autosonshow.tv/v2/token";
+    public function __construct() {
+        $this->curlHeaders = array();
+        $this->responseCode = 0;
+    }
+    public function getAccessToken($clientId, $clientSecret) {
+        // Init cUrl.
+        $r = $this->initCurl($this->_accessTokenUrl);
+        // Add client ID and client secret to the headers.
+        curl_setopt($r, CURLOPT_HTTPHEADER, array(
+            "Authorization: Basic " . base64_encode($clientId . ":" . $clientSecret),
+        ));
+
+        // Assemble POST parameters for the request.
+        $postFields = "grant_type=client_credentials";
+        // Obtain and return the access token from the response.
+        curl_setopt($r, CURLOPT_POST, true);
+        curl_setopt($r, CURLOPT_POSTFIELDS, $postFields);
+        $result = curl_exec($r);
+        if ($result == false) {
+            die("curl_exec() failed. Error: " . curl_error($r));
+        }
+
+        // Set up error check
+        $error_check = json_decode($result);
+
+        if (!empty($error_check) && !isset($error_check->error)) {
+          //Parse JSON return object.
+          return json_decode($result);
+        }
+
+    }
+    private function initCurl($url) {
+        $r = null;
+        if (($r = curl_init($url)) == false) {
+            header("HTTP/1.1 500", true, 500);
+            die("Cannot initialize cUrl session. Is cUrl enabled for your PHP installation?");
+        }
+        curl_setopt($r, CURLOPT_RETURNTRANSFER, 1);
+        // Decode compressed responses.
+        curl_setopt($r, CURLOPT_ENCODING, 1);
+        return($r);
+    }
+    public function execRequest($url, $accessToken, $getParams = array()) {
+        // Create request string.
+        $fullUrl = (count($getParams) > 0) ? $url."?".http_build_query($getParams) : $url;
+        $r = $this->initCurl($fullUrl);
+        curl_setopt($r, CURLOPT_HTTPHEADER, array(
+            "Authorization: Bearer " . $accessToken
+        ));
+
+        $response = curl_exec($r);
+        $info = curl_getinfo($r);
+        $e = curl_error($r);
+
+        if (!empty($e)) {
+            die("curl_exec() failed. Error: " . $e);
+        }
+
+        // Do switch for response code
+        switch ($info['http_code']) {
+          case 200:
+            //Parse JSON return object.
+            return array("content" => json_decode($response, true));
+            break;
+        }
+
+    }
+}
+
+// PREPROCESS NODE TO REMOVE SLIDESHOW AND PUT AOS IN ITS PLACE
+function nor_autosonshow_preprocess_node(&$variables) {
+
+  //  If the node is of used_vehicle and has viewmode search_results
+  if ($variables['type'] == 'used_vehicle' && $variables['view_mode'] == 'search_result') {
+
+    // Create nice var for VRM
+    $vehicle_registration = $variables['field_vehicle_registration'][0]['value'];
+
+    // Only run if the vehicle has a Reg Number
+    if (isset($vehicle_registration)) {
+
+      // Set up variables for the API call
+      $CLIENT_ID     = variable_get('autosonshow_client_id');
+      $CLIENT_SECRET = variable_get('autosonshow_client_secret');
+      $VEHICLE_ID    = $vehicle_registration;
+
+      // Init a new instance of the AOS Class
+      $api = new AOSAPI();
+
+      // Get the access token
+      $auth = $api->getAccessToken($CLIENT_ID, $CLIENT_SECRET);
+
+      // First check the access token is returned
+      if (isset($auth) && !empty($auth)) {
+
+        // Make the api call
+        $response = $api->execRequest("https://api.autosonshow.tv/v2/vehicles?vehicleIdFilter=" . $VEHICLE_ID, $auth->access_token);
+
+        // Check there is a response
+        if (isset($response) && is_array($response)) {
+
+          // Check to see if the large thumbnail exists
+          if (isset($response['content'][0]['thumbnailLarge']) && !empty($response['content'][0]['thumbnailLarge'])) {
+
+            // Output the response of thumbnail inside a new variable
+            $variables['content']['vehicle_autosonshow_thumbnail']['#markup'] = $response['content'][0]['thumbnailLarge'];
+          }
+        }
+      }
+    }
+  }
+
+
+  // If the node is of used_vehicle and has viewmode full
+  if ($variables['type'] == 'used_vehicle' && $variables['view_mode'] == 'full') {
+
+    // Create nice var for VRM
+    $vehicle_registration = $variables['field_vehicle_registration'][0]['value'];
+
+    // Only run if the vehicle has a Reg Number
+    if (isset($vehicle_registration)) {
+
+      // Set up variables for the API call
+      $CLIENT_ID     = variable_get('autosonshow_client_id');
+      $CLIENT_SECRET = variable_get('autosonshow_client_secret');
+      $VEHICLE_ID    = $vehicle_registration;
+
+      // Init a new instance of the AOS Class
+      $api = new AOSAPI();
+
+      // Get the access token
+      $auth = $api->getAccessToken($CLIENT_ID, $CLIENT_SECRET);
+
+      // First check the access token is returned
+      if (isset($auth) && !empty($auth)) {
+
+        // Make the api call
+        $response = $api->execRequest("https://api.autosonshow.tv/v2/vehicles/" . $VEHICLE_ID, $auth->access_token);
+
+        // Check there is a response
+        if (isset($response) && is_array($response)) {
+
+          // Check the main Player is available in the response
+          if (isset($response["content"]["player"]) && !empty($response["content"]["player"])) {
+
+            // Output the response of AOS player to print out on Uesd Vehicle DS
+            $variables['content']['vehicle_autosonshow']['#markup'] = urldecode($response["content"]["player"]);
+
+
+            // If the response has an image gallery.
+            if (isset($response["content"]["imageGallery"]) && !empty($response["content"]["imageGallery"])) {
+
+              // If thumbnails are set to show - add the imagegallery
+              if (variable_get('autosonshow_show_thumbnails', '') == 1) {
+                $variables['content']['vehicle_autosonshow']['#markup'] .= urldecode($response["content"]["imageGallery"]);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
